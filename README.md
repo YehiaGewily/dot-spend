@@ -1,55 +1,152 @@
 # dot-spend
 
-A cross-platform, minimalist CLI expense tracker designed for users who enjoy customization. It follows XDG standards on Linux and stores data correctly in AppData on Windows.
+A cross-platform CLI expense tracker for users who prefer managing their finances directly from the terminal.
+
+## Overview
+
+dot-spend is a minimalist, keyboard‑driven tool designed for speed, clarity, and compatibility. It runs seamlessly on Windows (PowerShell/CMD) and Linux systems, providing an efficient way to record, review, and export expenses without ever leaving the command line.
 
 ## Features
 
-* Fast startup time
-* Cross-platform data storage (XDG paths on Linux, AppData on Windows)
-* Clean, formatted terminal output using Rich
-* Includes a `--style polybar` flag for integration with Linux status bars
+* **Zero Friction Entry:** Add expenses quickly through simple command flags.
+* **Terminal Graphs:** View spending patterns using ASCII bar charts displayed directly in the console.
+* **Delete by ID:** Remove entries easily by referencing their list ID.
+* **Excel‑Ready Exports:** Output your data to CSV for analysis in Excel or Google Sheets.
+* **Widget Integration:** Output formatted data for Polybar, Waybar, Rainmeter, or custom JSON‑based widgets.
+* **Smart Storage:** Automatically follows XDG standards on Linux and uses AppData on Windows.
 
 ## Installation
 
-Clone the repository:
+dot-spend can be used either as a standalone application or run directly from source.
 
-```bash
+### Option A: Standalone Executable (Recommended)
+
+This produces a single executable file that runs without requiring Python.
+
+1. Clone the repository:
+
+```
 git clone https://github.com/yourusername/dot-spend.git
 cd dot-spend
 ```
 
-Install dependencies:
+2. Install dependencies:
 
-```bash
+```
 pip install -r requirements.txt
+```
+
+3. Build the executable using PyInstaller:
+
+```
+pyinstaller --onefile --name spend --hidden-import=jaraco.text main.py
+```
+
+4. Add the resulting binary to your system PATH.
+
+**Windows:**
+
+* Create a folder such as `C:\Tools`.
+* Move `dist\spend.exe` into it.
+* Add that folder to the System PATH.
+
+**Linux:**
+
+```
+sudo mv dist/spend /usr/local/bin/spend
+```
+
+5. Verify installation:
+
+```
+spend list
+```
+
+### Option B: Run from Source
+
+For development or modification:
+
+1. Clone and install dependencies as shown above.
+2. Execute commands using Python:
+
+```
+python main.py list
 ```
 
 ## Usage
 
-Add an expense:
+### Command Overview
 
-```bash
-python main.py add --amount 15.50 --category Food --note "Lunch"
+```
+Usage: spend [OPTIONS] COMMAND [ARGS]...
+
+Options:
+  --help     Show this message and exit.
+
+Commands:
+  add        Add a new expense.
+  delete     Delete an expense by its ID.
+  export     Export data to CSV.
+  graph      Visualize spending.
+  list       Display recorded expenses.
+  nuke       Remove all stored data.
+  status     Show daily totals.
 ```
 
-List recent expenses:
+### 1. Add an Expense
 
-```bash
-python main.py list
+```
+spend add --amount 12.50 --category "Food" --note "Lunch"
 ```
 
-Get status for widgets or bars:
+Short format:
 
-```bash
-python main.py status
+```
+spend add -a 12.50 -c "Food" -n "Lunch"
 ```
 
-## Building a Standalone Executable
+### 2. View History
 
-To create a standalone file that runs without Python installed:
-
-```bash
-pyinstaller --onefile --name spend main.py
+```
+spend list
+spend list --last 20
 ```
 
-The executable will be generated inside the `dist/` folder.
+### 3. Visualize Data
+
+```
+spend graph
+```
+
+### 4. Delete an Entry
+
+```
+spend delete 2
+```
+
+### 5. Export to CSV
+
+```
+spend export
+spend export C:\Users\You\Desktop\budget.csv
+```
+
+### 6. Desktop Widget Integration
+
+```
+spend status
+spend status --style polybar
+spend status --style json
+```
+
+## Data Storage
+
+**Windows:** `C:\Users\You\AppData\Local\Personal\dot-spend\expenses.json`
+
+**Linux:** `~/.local/share/dot-spend/expenses.json`
+
+To reset all data:
+
+```
+spend nuke
+```
