@@ -120,7 +120,7 @@ def nuke():
     confirm = typer.confirm("Are you sure you want to delete ALL expenses?")
     if confirm:
         save_data([])
-        rprint("[bold red]💥 Data nuked.[/bold red]")
+        rprint("[bold red] Data nuked.[/bold red]")
 
 if __name__ == "__main__":
     init_storage()
