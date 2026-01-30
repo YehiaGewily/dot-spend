@@ -1,0 +1,44 @@
+[
+    {
+        "id":"49cf160b",
+        "date":"2025-11-30 22:06",
+        "category":"FOOD",
+        "note":"Morning Coffee",
+        "amount":4.5
+    },
+    {
+        "id":"160bce70",
+        "date":"2025-11-30 22:06",
+        "category":"SUB",
+        "note":"Spotify",
+        "amount":12.99
+    },
+    {
+        "id":"dbbfcef7",
+        "date":"2026-01-30 18:55",
+        "category":"FOOD",
+        "note":"",
+        "amount":120.0
+    },
+    {
+        "id":"313deed7",
+        "date":"2026-01-30 19:42",
+        "category":"FOOD",
+        "note":"",
+        "amount":120.0
+    },
+    {
+        "id":"da28464d",
+        "date":"2026-01-30 19:43",
+        "category":"TEST",
+        "note":"",
+        "amount":50.0
+    },
+    {
+        "id":"659b74ee",
+        "date":"2026-01-30 19:44",
+        "category":"NEWTEST",
+        "note":"",
+        "amount":100.0
+    }
+]
