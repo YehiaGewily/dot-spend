@@ -1,0 +1,16 @@
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+dist
+build
+.git
+.github
+tests
+docs
+*.md
+!README.md
+.pre-commit-config.yaml
+.gitignore
+remote_repo.git
+data

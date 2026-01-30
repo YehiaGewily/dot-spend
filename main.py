@@ -21,6 +21,8 @@ from importers.excel_importer import ExcelImporter
 from importers.ofx_importer import OFXImporter
 from categorization import RuleCategorizer, MLCategorizer
 from deduplication import DuplicateDetector
+from sync.manager import SyncManager
+from recurring import RecurringManager
 
 history_manager = HistoryManager()
 
@@ -1068,6 +1070,355 @@ def import_file(
         count += 1
         
     rprint(f"[bold green]Successfully imported {count} transactions![/bold green]")
+
+# --- SYNC COMMAND ---
+sync_app = typer.Typer(help="Cloud synchronization")
+app.add_typer(sync_app, name="sync")
+
+@sync_app.command("setup")
+def sync_setup(
+    provider: str = typer.Argument(..., help="Provider: google_drive, git, dropbox"),
+    folder_id: str = typer.Option(None, help="Folder ID (Google Drive)"),
+    repo: str = typer.Option(None, help="Repo URL/Path (Git)"),
+    token: str = typer.Option(None, help="Auth Token (Dropbox)")
+):
+    """
+    Setup cloud synchronization.
+    """
+    manager = SyncManager()
+    
+    # Interactive setup fallback
+    if provider == "git" and not repo:
+        from config import DATA_DIR
+        repo = str(DATA_DIR)
+        rprint(f"[cyan]Using data directory as git repo: {repo}[/cyan]")
+    elif provider == "dropbox" and not token:
+        token = typer.prompt("Enter Dropbox access token")
+    
+    data = {}
+    if repo: data["repo_path"] = repo
+    if token: data["token"] = token
+    if folder_id: data["folder_id"] = folder_id
+
+    try:
+        manager.setup(provider, **data)
+        rprint(f"[green]Sync setup with {provider} complete.[/green]")
+    except Exception as e:
+        rprint(f"[red]Setup failed:[/red] {e}")
+
+@sync_app.command("enable")
+def sync_enable():
+    """Enable automatic sync."""
+    # Toggle config
+    manager = SyncManager()
+    manager.config["enabled"] = True
+    manager.save_config()
+    rprint("[green]Sync enabled.[/green]")
+
+@sync_app.command("disable")
+def sync_disable():
+    """Disable synchronization."""
+    manager = SyncManager()
+    manager.config["enabled"] = False
+    manager.save_config()
+    rprint("[yellow]Sync disabled.[/yellow]")
+
+@sync_app.command("now")
+def sync_now():
+    """Run manual sync."""
+    manager = SyncManager()
+    if not manager.config.get("enabled"):
+        rprint("[yellow]Sync is disabled. Enable it first.[/yellow]")
+        return
+        
+    rprint("[cyan]Syncing...[/cyan]")
+    # What to sync? The data files.
+    from config import get_data_path, get_budget_path
+    files = [str(get_data_path()), str(get_budget_path())]
+    
+    res = manager.sync_now(files)
+    rprint(res)
+
+@sync_app.command("status")
+def sync_status():
+    """Check sync status."""
+    manager = SyncManager()
+    enabled = manager.config.get("enabled", False)
+    provider = manager.config.get("provider", "None")
+    
+    status_color = "green" if enabled else "yellow"
+    rprint(f"Sync: [{status_color}]{'Enabled' if enabled else 'Disabled'}[/{status_color}]")
+    rprint(f"Provider: {provider}")
+
+
+# --- VERSION COMMAND ---
+VERSION = "2.0.0"
+
+@app.command()
+def version():
+    """Show version information."""
+    rprint(f"[bold cyan]dot-spend[/bold cyan] version [green]{VERSION}[/green]")
+    rprint("https://github.com/YehiaGewily/dot-spend")
+
+
+# --- SHELL COMPLETIONS ---
+completions_app = typer.Typer(help="Shell completion scripts")
+app.add_typer(completions_app, name="completions")
+
+BASH_COMPLETION = '''
+_spend_completion() {
+    local IFS=$'\\n'
+    COMPREPLY=( $(env COMP_WORDS="${COMP_WORDS[*]}" \\
+                      COMP_CWORD=$COMP_CWORD \\
+                      _SPEND_COMPLETE=bash_complete $1) )
+    return 0
+}
+complete -o default -F _spend_completion spend
+'''
+
+ZSH_COMPLETION = '''
+#compdef spend
+_spend() {
+    eval $(env _SPEND_COMPLETE=zsh_source spend)
+}
+compdef _spend spend
+'''
+
+FISH_COMPLETION = '''
+complete -c spend -f
+complete -c spend -n "__fish_use_subcommand" -a "add" -d "Add expense"
+complete -c spend -n "__fish_use_subcommand" -a "list" -d "List expenses"
+complete -c spend -n "__fish_use_subcommand" -a "delete" -d "Delete expense"
+complete -c spend -n "__fish_use_subcommand" -a "edit" -d "Edit expense"
+complete -c spend -n "__fish_use_subcommand" -a "budget" -d "Budget management"
+complete -c spend -n "__fish_use_subcommand" -a "insights" -d "Analytics"
+complete -c spend -n "__fish_use_subcommand" -a "import" -d "Import data"
+complete -c spend -n "__fish_use_subcommand" -a "export" -d "Export data"
+complete -c spend -n "__fish_use_subcommand" -a "sync" -d "Cloud sync"
+complete -c spend -n "__fish_use_subcommand" -a "tui" -d "Interactive mode"
+complete -c spend -n "__fish_use_subcommand" -a "graph" -d "Visualize data"
+complete -c spend -n "__fish_use_subcommand" -a "version" -d "Show version"
+'''
+
+@completions_app.command("show")
+def completions_show(
+    shell: str = typer.Argument(..., help="Shell: bash, zsh, fish")
+):
+    """Show completion script for a shell."""
+    shell = shell.lower()
+    if shell == "bash":
+        print(BASH_COMPLETION)
+    elif shell == "zsh":
+        print(ZSH_COMPLETION)
+    elif shell == "fish":
+        print(FISH_COMPLETION)
+    else:
+        rprint(f"[red]Unknown shell:[/red] {shell}")
+        rprint("Supported: bash, zsh, fish")
+
+@completions_app.command("install")
+def completions_install(
+    shell: str = typer.Argument(..., help="Shell: bash, zsh, fish")
+):
+    """Install completion script for a shell."""
+    import os
+    home = os.path.expanduser("~")
+    shell = shell.lower()
+    
+    if shell == "bash":
+        path = os.path.join(home, ".bash_completion")
+        with open(path, "a") as f:
+            f.write(BASH_COMPLETION)
+        rprint(f"[green]Bash completions added to {path}[/green]")
+        rprint("Run: source ~/.bash_completion")
+    elif shell == "zsh":
+        path = os.path.join(home, ".zfunc", "_spend")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(ZSH_COMPLETION)
+        rprint(f"[green]Zsh completions installed to {path}[/green]")
+        rprint("Add to ~/.zshrc: fpath=(~/.zfunc $fpath); autoload -Uz compinit && compinit")
+    elif shell == "fish":
+        path = os.path.join(home, ".config", "fish", "completions", "spend.fish")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(FISH_COMPLETION)
+        rprint(f"[green]Fish completions installed to {path}[/green]")
+    else:
+        rprint(f"[red]Unknown shell:[/red] {shell}")
+
+# --- RECURRING EXPENSES ---
+recurring_app = typer.Typer(help="Recurring expenses")
+app.add_typer(recurring_app, name="recurring")
+
+@recurring_app.command("add")
+def recurring_add(
+    amount: float = typer.Option(..., "--amount", "-a", help="Amount"),
+    category: str = typer.Option(..., "--category", "-c", help="Category"),
+    note: str = typer.Option("", "--note", "-n", help="Description"),
+    frequency: str = typer.Option("monthly", "--frequency", "-f", help="daily/weekly/monthly/yearly"),
+    day: int = typer.Option(1, "--day", help="Day of week (0-6) or month (1-31)"),
+):
+    """Add a recurring expense."""
+    mgr = RecurringManager()
+    rec_id = mgr.add(amount, category, note, frequency, day)
+    rprint(f"[green]Recurring expense added: {rec_id}[/green]")
+    rprint(f"  {frequency}: ${amount:.2f} - {category}")
+
+@recurring_app.command("list")
+def recurring_list():
+    """List all recurring expenses."""
+    mgr = RecurringManager()
+    items = mgr.list_all()
+    
+    if not items:
+        rprint("[yellow]No recurring expenses.[/yellow]")
+        return
+    
+    table = Table(title="Recurring Expenses")
+    table.add_column("ID", style="cyan")
+    table.add_column("Amount", style="green")
+    table.add_column("Category")
+    table.add_column("Frequency")
+    table.add_column("Status")
+    
+    for rec_id, rec in items:
+        status = "[green]Active[/green]" if rec["active"] else "[yellow]Paused[/yellow]"
+        table.add_row(
+            rec_id,
+            f"${rec['amount']:.2f}",
+            rec["category"],
+            f"{rec['frequency']} (day {rec['day']})",
+            status
+        )
+    
+    console.print(table)
+    
+    # Forecast
+    forecast = mgr.forecast()
+    rprint(f"\n[bold]Monthly forecast:[/bold] ${forecast:.2f}")
+
+@recurring_app.command("delete")
+def recurring_delete(rec_id: str = typer.Argument(..., help="Recurring ID")):
+    """Delete a recurring expense."""
+    mgr = RecurringManager()
+    if mgr.delete(rec_id):
+        rprint(f"[green]Deleted recurring expense: {rec_id}[/green]")
+    else:
+        rprint(f"[red]Not found: {rec_id}[/red]")
+
+@recurring_app.command("pause")
+def recurring_pause(rec_id: str = typer.Argument(..., help="Recurring ID")):
+    """Pause a recurring expense."""
+    mgr = RecurringManager()
+    if mgr.pause(rec_id):
+        rprint(f"[yellow]Paused: {rec_id}[/yellow]")
+    else:
+        rprint(f"[red]Not found: {rec_id}[/red]")
+
+@recurring_app.command("resume")
+def recurring_resume(rec_id: str = typer.Argument(..., help="Recurring ID")):
+    """Resume a paused recurring expense."""
+    mgr = RecurringManager()
+    if mgr.resume(rec_id):
+        rprint(f"[green]Resumed: {rec_id}[/green]")
+    else:
+        rprint(f"[red]Not found: {rec_id}[/red]")
+
+@recurring_app.command("sync")
+def recurring_sync():
+    """Generate missing recurring expenses."""
+    mgr = RecurringManager()
+    store = DataStoreFactory.get_store()
+    
+    generated = mgr.sync_generate(store.add_expense)
+    
+    if generated:
+        rprint(f"[green]Generated {len(generated)} recurring expenses.[/green]")
+        for exp in generated:
+            rprint(f"  - ${exp['amount']:.2f} {exp['category']}")
+    else:
+        rprint("[cyan]All recurring expenses up to date.[/cyan]")
+
+
+# --- CURRENCY COMMANDS ---
+from currency import CurrencyManager, SUPPORTED_CURRENCIES, CURRENCY_SYMBOLS
+
+currency_app = typer.Typer(help="Currency management")
+app.add_typer(currency_app, name="currency")
+
+@currency_app.command("set")
+def currency_set(currency: str = typer.Argument(..., help="Base currency code (USD, EUR, etc.)")):
+    """Set base currency."""
+    mgr = CurrencyManager()
+    currency = currency.upper()
+    if currency not in SUPPORTED_CURRENCIES:
+        rprint(f"[red]Unsupported currency: {currency}[/red]")
+        rprint(f"Supported: {', '.join(SUPPORTED_CURRENCIES[:10])}...")
+        return
+    
+    if mgr.set_base(currency):
+        rprint(f"[green]Base currency set to {currency}[/green]")
+        mgr.update_rates()
+        rprint("[cyan]Exchange rates updated.[/cyan]")
+
+@currency_app.command("list")
+def currency_list():
+    """List supported currencies."""
+    table = Table(title="Supported Currencies")
+    table.add_column("Code", style="cyan")
+    table.add_column("Symbol")
+    
+    for i in range(0, len(SUPPORTED_CURRENCIES), 4):
+        row = []
+        for j in range(4):
+            if i + j < len(SUPPORTED_CURRENCIES):
+                code = SUPPORTED_CURRENCIES[i + j]
+                symbol = CURRENCY_SYMBOLS.get(code, "")
+                row.append(f"{code} ({symbol})")
+        if row:
+            # Simplified display
+            pass
+    
+    for code in SUPPORTED_CURRENCIES:
+        symbol = CURRENCY_SYMBOLS.get(code, "")
+        table.add_row(code, symbol)
+    
+    console.print(table)
+
+@currency_app.command("rates")
+def currency_rates():
+    """Show current exchange rates."""
+    mgr = CurrencyManager()
+    
+    if mgr.is_stale():
+        rprint("[yellow]Warning: Exchange rates may be stale. Run 'spend currency update'.[/yellow]")
+    
+    rprint(f"[bold]Base currency:[/bold] {mgr.base_currency}")
+    rprint(f"[bold]Last updated:[/bold] {mgr.config.get('last_update', 'Never')}")
+    
+    table = Table(title="Exchange Rates")
+    table.add_column("Currency")
+    table.add_column("Rate")
+    
+    rates = mgr.rates.get("rates", {})
+    for code in ["USD", "EUR", "GBP", "JPY", "CAD", "AUD"]:
+        if code in rates:
+            table.add_row(code, f"{rates[code]:.4f}")
+    
+    console.print(table)
+
+@currency_app.command("update")
+def currency_update():
+    """Update exchange rates from API."""
+    mgr = CurrencyManager()
+    rprint("[cyan]Fetching exchange rates...[/cyan]")
+    
+    if mgr.update_rates():
+        rprint("[green]Exchange rates updated successfully.[/green]")
+    else:
+        rprint("[red]Failed to update rates. Using cached values.[/red]")
+
 
 if __name__ == "__main__":
     init_storage()
