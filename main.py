@@ -13,8 +13,14 @@ from config import init_storage, get_data_path, get_budget_path
 from utils import get_date_range, filter_data_by_date, parse_date
 from history import HistoryManager
 from exporters import ExportManager
-import typer
-import json
+from insights import InsightsEngine
+from datastore import DataStoreFactory
+from migrations import migrate_json_to_sqlite, migrate_sqlite_to_json
+from importers.csv_importer import CSVImporter
+from importers.excel_importer import ExcelImporter
+from importers.ofx_importer import OFXImporter
+from categorization import RuleCategorizer, MLCategorizer
+from deduplication import DuplicateDetector
 
 history_manager = HistoryManager()
 
@@ -23,48 +29,7 @@ app = typer.Typer(add_completion=False)
 console = Console()
 
 # --- DATA HANDLING ---
-def load_data():
-    path = get_data_path()
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            
-        # Migration: Ensure all have ID and timestamp (ISO)
-        migrated = False
-        for item in data:
-            if 'id' not in item:
-                item['id'] = str(uuid.uuid4())[:8]
-                migrated = True
-            
-            # Ensure 'timestamp' field is the ISO date string for filtering
-            # Old data had 'timestamp' as float and 'date' as string
-            # We want 'timestamp' to be the robust ISO string used for ID
-            # Let's keep 'date' as the display string for backwards compat if we want,
-            # or standardize.
-            # Requirement says: "timestamp (ISO format)"
-            
-            if isinstance(item.get('timestamp'), float):
-                # Convert old float timestamp to ISO
-                dt = datetime.datetime.fromtimestamp(item['timestamp'])
-                item['timestamp'] = dt.isoformat()
-                migrated = True
-            elif 'timestamp' not in item:
-                # Use date string if available
-                dt = parse_date(item['date']) if 'date' in item else datetime.datetime.now()
-                item['timestamp'] = dt.isoformat() if dt else datetime.datetime.now().isoformat()
-                migrated = True
-                
-        if migrated:
-            save_data(data)
-            
-        return data
-    except (FileNotFoundError, json.JSONDecodeError):
-        return []
-
-def save_data(data):
-    path = get_data_path()
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=4)
+# Moved to data.py
 
 # --- BUDGET LOGIC ---
 budget_app = typer.Typer(help="Manage budgets")
@@ -99,7 +64,8 @@ def budget_set(
         rprint("[red]Error: Period must be 'monthly' or 'weekly'[/red]")
         return
     
-    budgets = load_budgets()
+    store = DataStoreFactory.get_store()
+    budgets = store.load_budgets()
     cat_key = category.upper()
     
     budgets[cat_key] = {
@@ -108,13 +74,14 @@ def budget_set(
         "created": datetime.datetime.now().strftime("%Y-%m-%d")
     }
     
-    save_budgets(budgets)
+    store.save_budgets(budgets)
     rprint(f"[bold green]✔ Budget set:[/bold green] {cat_key} - ${amount} ({period})")
 
 @budget_app.command("list")
 def budget_list():
     """List all active budgets."""
-    budgets = load_budgets()
+    store = DataStoreFactory.get_store()
+    budgets = store.load_budgets()
     if not budgets:
         rprint("[yellow]No budgets set.[/yellow]")
         return
@@ -135,12 +102,13 @@ def budget_delete(
     category: str = typer.Option(..., "--category", "-c", help="Category to remove budget for")
 ):
     """Delete a budget."""
-    budgets = load_budgets()
+    store = DataStoreFactory.get_store()
+    budgets = store.load_budgets()
     cat_key = category.upper()
     
     if cat_key in budgets:
         del budgets[cat_key]
-        save_budgets(budgets)
+        store.save_budgets(budgets)
         rprint(f"[bold red]Deleted budget for:[/bold red] {cat_key}")
     else:
         rprint(f"[red]No budget found for:[/red] {cat_key}")
@@ -149,14 +117,17 @@ def budget_delete(
 def budget_clear():
     """Remove all budgets."""
     if typer.confirm("Are you sure you want to delete ALL budgets?"):
-        save_budgets({})
+        store = DataStoreFactory.get_store()
+        store.save_budgets({})
         rprint("[bold red]All budgets cleared.[/bold red]")
 
 @budget_app.command("status")
+@budget_app.command("status")
 def budget_status():
     """Check budget status."""
-    budgets = load_budgets()
-    data = load_data()
+    store = DataStoreFactory.get_store()
+    budgets = store.load_budgets()
+    data = store.get_expenses()
     
     if not budgets:
         rprint("[yellow]No budgets set.[/yellow]")
@@ -198,19 +169,6 @@ def budget_status():
         
     console.print(table)
 
-def load_budgets():
-    path = get_budget_path()
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
-
-def save_budgets(data):
-    path = get_budget_path()
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(data, f, indent=4)
-
 # --- COMMANDS ---
 
 @app.command()
@@ -223,21 +181,14 @@ def add(
     Add a new expense.
     """
     init_storage()
-    data = load_data()
+    store = DataStoreFactory.get_store()
 
-    entry = {
-        "id": str(uuid.uuid4())[:8],
-        "date": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"), # Display friendly
-        "timestamp": datetime.datetime.now().isoformat(), # Filter friendly ISO
-        "amount": amount,
-        "category": category.upper(),
-        "note": note
-    }
-
-    data.append(entry)
-    save_data(data)
-
-    save_data(data)
+    entry = store.add_expense(
+        amount=amount,
+        category=category,
+        note=note,
+        timestamp=datetime.datetime.now().isoformat()
+    )
     
     # Log transaction
     history_manager.log_transaction(
@@ -249,7 +200,8 @@ def add(
     rprint(f"[bold green]✔ Added:[/bold green] {category} - ${amount}")
 
     # Budget Check
-    budgets = load_budgets()
+    budgets = store.load_budgets()
+    data = store.get_expenses()
     cat_key = category.upper()
     if cat_key in budgets:
         info = budgets[cat_key]
@@ -287,7 +239,8 @@ def view_expenses(
     """
     View expenses with date filtering.
     """
-    data = load_data()
+    store = DataStoreFactory.get_store()
+    data = store.get_expenses()
     
     if not data:
         rprint("[yellow]No expenses found.[/yellow]")
@@ -341,21 +294,11 @@ def delete(
     """
     Delete an expense by its ID.
     """
-    data = load_data()
-    if not data:
-        rprint("[red]No data to delete.[/red]")
-        return
-
-    # Find and delete
-    target = None
-    for item in data:
-        if item['id'] == expense_id:
-            target = item
-            break
+    store = DataStoreFactory.get_store()
+    target = store.get_expense(expense_id)
     
     if target:
-        data.remove(target)
-        save_data(data)
+        store.delete_expense(expense_id)
         
         # Log transaction
         history_manager.log_transaction(
@@ -364,7 +307,7 @@ def delete(
             expense=target
         )
         
-        rprint(f"[bold red]Deleted:[/bold red] {target['note']} - ${target['amount']}")
+        rprint(f"[bold red]Deleted:[/bold red] {target.get('note', '')} - ${target['amount']}")
     else:
         rprint(f"[bold red]Error:[/bold red] ID {expense_id} not found.")
 
@@ -380,15 +323,8 @@ def edit(
     """
     Edit an existing expense.
     """
-    data = load_data()
-    target = None
-    target_index = -1
-    
-    for i, item in enumerate(data):
-        if item['id'] == expense_id:
-            target = item
-            target_index = i
-            break
+    store = DataStoreFactory.get_store()
+    target = store.get_expense(expense_id)
             
     if not target:
         rprint(f"[bold red]Error:[/bold red] Expense ID {expense_id} not found.")
@@ -398,27 +334,29 @@ def edit(
     before_state = target.copy()
     
     # Apply changes
+    updates = {}
     changes = []
+    
     if amount is not None:
-        target['amount'] = amount
+        updates['amount'] = amount
         changes.append(f"Amount: ${before_state['amount']} -> ${amount}")
     if category is not None:
-        target['category'] = category.upper()
+        updates['category'] = category.upper()
         changes.append(f"Category: {before_state['category']} -> {category.upper()}")
     if note is not None:
-        target['note'] = note
-        changes.append(f"Note: {before_state['note']} -> {note}")
+        updates['note'] = note
+        changes.append(f"Note: {before_state.get('note', '')} -> {note}")
     if date is not None:
         new_date = parse_date(date)
         if new_date:
-            target['date'] = new_date.strftime("%Y-%m-%d %H:%M")
-            target['timestamp'] = new_date.isoformat()
-            changes.append(f"Date: {before_state['date']} -> {target['date']}")
+            updates['date'] = new_date.strftime("%Y-%m-%d %H:%M")
+            updates['timestamp'] = new_date.isoformat()
+            changes.append(f"Date: {before_state.get('date', '')} -> {updates['date']}")
         else:
             rprint(f"[red]Invalid date format:[/red] {date}")
             return
 
-    if not changes:
+    if not updates:
         rprint("[yellow]No changes made.[/yellow]")
         return
         
@@ -428,15 +366,17 @@ def edit(
         rprint(f" - {change}")
         
     if typer.confirm("Apply these changes?"):
-        data[target_index] = target
-        save_data(data)
+        store.update_expense(expense_id, updates)
+        
+        # Fetch updated for log
+        after_state = store.get_expense(expense_id)
         
         # Log transaction
         history_manager.log_transaction(
             action="edit",
             expense_id=expense_id,
             before=before_state,
-            after=target
+            after=after_state
         )
         rprint("[bold green]✔ Expense updated.[/bold green]")
     else:
@@ -452,6 +392,8 @@ def undo(
     if steps < 1:
         return
 
+    store = DataStoreFactory.get_store()
+
     for _ in range(steps):
         last_tx = history_manager.pop_last_transaction()
         if not last_tx:
@@ -462,20 +404,24 @@ def undo(
         expense_id = last_tx['expense_id']
         rprint(f"Undoing [bold]{action}[/bold] on ID {expense_id}...", end=" ")
         
-        data = load_data()
-        
         if action == 'add':
             # Reverse of add is delete
-            data = [item for item in data if item['id'] != expense_id]
-            save_data(data)
-            rprint("[green]Done (Removed)[/green]")
+            if store.delete_expense(expense_id):
+                rprint("[green]Done (Removed)[/green]")
+            else:
+                rprint("[red]Failed (Not found)[/red]")
             
         elif action == 'delete':
             # Reverse of delete is re-add
-            # We need the full object which we stored in 'expense'
             if 'expense' in last_tx:
-                data.append(last_tx['expense'])
-                save_data(data)
+                exp = last_tx['expense']
+                store.add_expense(
+                    amount=exp['amount'],
+                    category=exp['category'],
+                    note=exp['note'],
+                    timestamp=exp['timestamp'],
+                    expense_id=exp['id']
+                )
                 rprint("[green]Done (Restored)[/green]")
             else:
                 rprint("[red]Failed (Missing backup data)[/red]")
@@ -483,16 +429,17 @@ def undo(
         elif action == 'edit':
             # Reverse of edit is returning to 'before' state
             if 'before' in last_tx:
-                # Find current item (if it still exists)
-                found = False
-                for i, item in enumerate(data):
-                    if item['id'] == expense_id:
-                        data[i] = last_tx['before']
-                        found = True
-                        break
+                updates = last_tx['before']
+                # We need to map 'date' back to timestamp if needed or just use updates directly
+                # update_expense expects dict of fields to update.
+                # 'before' has all fields.
                 
-                if found:
-                    save_data(data)
+                # Clean up updates dict if needed, or just pass it.
+                # update_expense implementation in SQLite handles keys.
+                # But 'id' shouldn't be updated.
+                updates_clean = {k: v for k, v in updates.items() if k != 'id'}
+                
+                if store.update_expense(expense_id, updates_clean):
                     rprint("[green]Done (Reverted)[/green]")
                 else:
                     rprint("[red]Failed (Item not found)[/red]")
@@ -582,8 +529,9 @@ def graph(
     """
     Visualize spending (Budget vs Actual).
     """
-    data = load_data()
-    budgets = load_budgets()
+    store = DataStoreFactory.get_store()
+    data = store.get_expenses()
+    budgets = store.load_budgets()
     
     if not data:
         rprint("[yellow]No data to graph.[/yellow]")
@@ -689,7 +637,8 @@ def export(
     """
     Export data with advanced options (CSV, Excel, PDF, JSON).
     """
-    data = load_data()
+    store = DataStoreFactory.get_store()
+    data = store.get_expenses()
     if not data:
         rprint("[yellow]No data to export.[/yellow]")
         return
@@ -728,6 +677,64 @@ def export(
         except Exception as e:
             rprint(f"[red]Failed to open file:[/red] {e}")
 
+@app.command()
+def insights(
+    basic: bool = typer.Option(False, "--basic", help="Show basic insights"),
+    trends: bool = typer.Option(False, "--trends", help="Show trend analysis"),
+    categories: bool = typer.Option(False, "--categories", help="Show category analysis"),
+    predict: bool = typer.Option(False, "--predict", help="Show predictive insights"),
+    time: bool = typer.Option(False, "--time", help="Show time-based analysis"),
+    from_date: str = typer.Option(None, "--from", help="Start date"),
+    to_date: str = typer.Option(None, "--to", help="End date"),
+    days: int = typer.Option(None, "--days", help="Last N days"),
+    category: str = typer.Option(None, "--category", "-c", help="Filter by category"),
+):
+    """
+    Show financial insights and trends.
+    """
+    store = DataStoreFactory.get_store()
+    data = store.get_expenses()
+    if not data:
+        rprint("[yellow]No data available.[/yellow]")
+        return
+
+    # Filter by date
+    start, end = get_date_range(from_date, to_date, days)
+    filtered_data = filter_data_by_date(data, start, end)
+
+    # Filter by category
+    if category:
+        filtered_data = [d for d in filtered_data if d['category'].upper() == category.upper()]
+
+    if not filtered_data:
+        rprint("[yellow]No data matches filter.[/yellow]")
+        return
+        
+    engine = InsightsEngine(filtered_data, store.load_budgets())
+    engine.run_command(basic, trends, categories, predict, time)
+
+
+@app.command(name="interactive")
+def interactive():
+    """
+    Launch the interactive terminal UI.
+    """ 
+    try:
+        from tui import DotSpendApp
+        app = DotSpendApp()
+        app.run()
+    except ImportError:
+        rprint("[red]Error:[/red] Textual is not installed. Run 'pip install textual'.")
+    except Exception as e:
+        rprint(f"[red]Error launching TUI:[/red] {e}")
+
+@app.command(name="tui")
+def tui():
+    """
+    Launch the interactive terminal UI (alias).
+    """
+    interactive()
+
 
 @app.command()
 def summary(
@@ -745,7 +752,8 @@ def summary(
     """
     Show financial summary (Total, Avg/Day, Breakdown).
     """
-    data = load_data()
+    store = DataStoreFactory.get_store()
+    data = store.get_expenses()
     start, end = get_date_range(
         from_date, to_date, days, today, yesterday, 
         this_week, last_week, this_month, last_month, this_year
@@ -851,9 +859,215 @@ def nuke():
     """
     confirm = typer.confirm("Are you sure you want to delete ALL expenses?")
     if confirm:
-        save_data([])
+        store = DataStoreFactory.get_store()
+        store.clear_all_expenses()
         rprint("[bold red]💥 Data nuked.[/bold red]")
 
+# --- MIGRATION COMMANDS ---
+migrate_app = typer.Typer(help="Manage data migration")
+app.add_typer(migrate_app, name="migrate")
+
+@migrate_app.command("to-sqlite")
+def to_sqlite():
+    """Migrate data from JSON to SQLite."""
+    if typer.confirm("Migrate all data to SQLite? This will backup your JSON files first."):
+        migrate_json_to_sqlite()
+
+@migrate_app.command("to-json")
+def to_json():
+    """Migrate data from SQLite to JSON."""
+    if typer.confirm("Migrate all data to JSON? This will backup your SQLite database first."):
+        migrate_sqlite_to_json()
+
+# --- CONFIG COMMAND ---
+config_app = typer.Typer(help="Manage configuration")
+app.add_typer(config_app, name="config")
+
+@config_app.command("get")
+def config_get(key: str = typer.Argument(..., help="Config key")):
+    """Get a configuration value."""
+    from config import load_settings
+    settings = load_settings()
+    val = settings.get(key)
+    if val:
+        rprint(f"{key} = [green]{val}[/green]")
+    else:
+        rprint(f"[red]Key '{key}' not set.[/red]")
+
+@config_app.command("set")
+def config_set(
+    key: str = typer.Argument(..., help="Config key"),
+    value: str = typer.Argument(..., help="Config value")
+):
+    """Set a configuration value."""
+    from config import load_settings, save_settings
+    settings = load_settings()
+    
+    if key == "storage":
+        key = "storage_backend"
+        if value not in ["json", "sqlite"]:
+             rprint("[red]Invalid backend. data must be 'json' or 'sqlite'[/red]")
+             return
+             
+    settings[key] = value
+    save_settings(settings)
+    rprint(f"[green]Set {key} = {value}[/green]")
+
+
+# --- IMPORT COMMAND ---
+@app.command(name="import")
+def import_file(
+    file_path: str = typer.Argument(..., help="Path to file (CSV, XLSX, OFX)"),
+    format: str = typer.Option(None, "--format", "-f", help="Format: csv, xlsx, ofx"),
+    mapping: str = typer.Option(None, "--mapping", "-m", help="Column mapping (JSON string or file path)"),
+    preview: bool = typer.Option(False, "--preview", "-p", help="Preview only"),
+    interactive: bool = typer.Option(False, "--interactive", "-i", help="Interactive review"),
+    skip_duplicates: bool = typer.Option(True, "--skip-duplicates/--no-skip", help="Skip duplicates"),
+    invert_negative: bool = typer.Option(True, "--invert-negative", help="Invert negative amounts (expenses often negative in statements)"),
+):
+    """
+    Import transactions from bank statements.
+    """
+    path = Path(file_path)
+    if not path.exists():
+        rprint(f"[red]File not found:[/red] {file_path}")
+        return
+
+    # Detect format
+    if not format:
+        suffix = path.suffix.lower()
+        if suffix == '.csv': format = 'csv'
+        elif suffix in ['.xlsx', '.xls']: format = 'xlsx'
+        elif suffix == '.ofx': format = 'ofx'
+        else:
+            rprint("[red]Could not detect format. Specify --format.[/red]")
+            return
+
+    # Select Importer
+    importer = None
+    if format == 'csv': importer = CSVImporter()
+    elif format == 'xlsx': importer = ExcelImporter()
+    elif format == 'ofx': importer = OFXImporter()
+    else:
+        rprint(f"[red]Unsupported format:[/red] {format}")
+        return
+
+    rprint(f"[cyan]Parsing {format.upper()} file...[/cyan]")
+    
+    # Parse options
+    # Mapping config handling (simplistic for now)
+    mapping_dict = {}
+    if mapping:
+        import json
+        try:
+             # Try parsing as JSON string
+             mapping_dict = json.loads(mapping)
+        except:
+             # Try reading file
+             m_path = Path(mapping)
+             if m_path.exists():
+                 with open(m_path) as f:
+                     mapping_dict = json.load(f)
+    
+    try:
+        transactions = importer.parse(
+            str(path), 
+            mapping=mapping_dict, 
+            invert_negative=invert_negative
+        )
+    except Exception as e:
+        rprint(f"[red]Import failed:[/red] {e}")
+        return
+        
+    if not transactions:
+        rprint("[yellow]No transactions found.[/yellow]")
+        return
+        
+    rprint(f"[green]Found {len(transactions)} transactions.[/green]")
+    
+    # Init storage & helpers
+    store = DataStoreFactory.get_store()
+    existing_data = store.get_expenses() # Need all for ML/Dedup
+    
+    deduper = DuplicateDetector(existing_data)
+    rule_categorizer = RuleCategorizer() # Config path optional
+    ml_categorizer = MLCategorizer()
+    ml_categorizer.train(existing_data)
+    
+    new_txs = []
+    
+    # Process transactions
+    stats = {"auto_cat": 0, "duplicates": 0, "new": 0}
+    
+    for tx in transactions:
+        # Check Duplicate
+        if skip_duplicates and deduper.is_duplicate(tx):
+            stats["duplicates"] += 1
+            continue
+            
+        # Auto-categorize
+        cat = rule_categorizer.categorize(tx.description, tx.amount)
+        if not cat:
+            cat = ml_categorizer.predict(tx.description)
+            
+        if cat:
+            tx.category = cat
+            stats["auto_cat"] += 1
+        
+        new_txs.append(tx)
+        stats["new"] += 1
+
+    rprint(f"Stats: {stats['new']} new ({stats['auto_cat']} auto-categorized), {stats['duplicates']} duplicates skipped.")
+
+    if preview:
+        table = Table(title="Preview Import")
+        table.add_column("Date")
+        table.add_column("Desc")
+        table.add_column("Amount")
+        table.add_column("Category")
+        for tx in new_txs[:10]:
+            cat_style = "green" if tx.category else "red"
+            cat_display = tx.category or "UNCATEGORIZED"
+            table.add_row(
+                tx.date[:10],
+                tx.description,
+                f"{tx.amount:.2f}",
+                f"[{cat_style}]{cat_display}[/{cat_style}]"
+            )
+        console.print(table)
+        if len(new_txs) > 10:
+            rprint(f"... and {len(new_txs)-10} more.")
+        return
+
+    if interactive:
+        # Interactive review logic
+        # For MVP, maybe confirm bulk or iterate uncategorized
+        # Let's iterate UNcataloged ones
+        
+        uncategorized = [t for t in new_txs if not t.category]
+        if uncategorized:
+            if typer.confirm(f"Review {len(uncategorized)} uncategorized transactions?"):
+                 for tx in uncategorized:
+                     cat = typer.prompt(f"Category for '{tx.description}' (${tx.amount})", default="General")
+                     tx.category = cat
+        
+    # Final Confirm
+    if not typer.confirm(f"Import {len(new_txs)} transactions?"):
+        rprint("[yellow]Import cancelled.[/yellow]")
+        return
+        
+    # Save
+    count = 0
+    for tx in new_txs:
+        store.add_expense(
+            amount=tx.amount,
+            category=tx.category or "Uncategorized", 
+            note=tx.description,
+            timestamp=tx.date # ISO string
+        )
+        count += 1
+        
+    rprint(f"[bold green]Successfully imported {count} transactions![/bold green]")
 
 if __name__ == "__main__":
     init_storage()

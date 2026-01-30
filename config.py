@@ -41,3 +41,27 @@ def get_budget_path():
 
 def get_history_path():
     return HISTORY_FILE
+
+def get_db_path():
+    return DATA_DIR / "expenses.db"
+
+SETTINGS_FILE = DATA_DIR / "settings.json"
+
+def load_settings():
+    if not SETTINGS_FILE.exists():
+        return {"storage_backend": "json"}
+    try:
+        with open(SETTINGS_FILE, "r") as f:
+            return json.load(f)
+    except:
+        return {"storage_backend": "json"}
+
+def save_settings(settings):
+    with open(SETTINGS_FILE, "w") as f:
+        json.dump(settings, f, indent=4)
+
+def get_storage_backend():
+    return load_settings().get("storage_backend", "json")
+
+# Storage Configuration
+STORAGE_BACKEND = get_storage_backend()

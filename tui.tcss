@@ -1,0 +1,83 @@
+Screen {
+    layout: grid;
+    grid-size: 2;
+    grid-columns: 20 1fr;
+    background: $surface;
+}
+
+#header {
+    height: 3;
+    dock: top;
+    content-align: center middle;
+    background: $accent;
+    color: $text;
+    text-style: bold;
+}
+
+#sidebar {
+    dock: left;
+    width: 20;
+    height: 100%;
+    background: $panel;
+    border-right: heavy $accent;
+}
+
+#sidebar > Button {
+    width: 100%;
+    border: none;
+    height: 3;
+    content-align: left middle;
+    padding-left: 2;
+}
+
+#sidebar > Button:hover {
+    background: $accent-darken-1;
+}
+
+.content {
+    padding: 1 2;
+    height: 100%;
+    overflow-y: auto;
+}
+
+/* Dashboard Widgets */
+.stat-box {
+    height: 5;
+    width: 1fr;
+    border: heavy $accent;
+    content-align: center middle;
+    margin: 1;
+}
+
+.stat-value {
+    text-style: bold;
+    color: $success;
+}
+
+/* Forms */
+#add-form {
+    max-width: 60;
+    margin: 2;
+    padding: 2;
+    border: solid $accent;
+}
+
+Input {
+    margin-bottom: 1;
+}
+
+Label {
+    margin-top: 1;
+    margin-bottom: 0;
+}
+
+/* DataTable */
+DataTable {
+    height: 1fr;
+    border: solid $accent;
+}
+
+/* Budgets */
+ProgressBar {
+    margin-bottom: 1;
+}
