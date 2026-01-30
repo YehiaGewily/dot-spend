@@ -1,0 +1,55 @@
+# Byte-compiled / optimized
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# PyInstaller
+*.spec
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Local data (user specific)
+data/
+*.db
+expenses.json
+budgets.json
+history.json
+settings.json
+sync_config.json
+currency.json
+exchange_rates.json
+recurring.json
+
+# Temp exports
+expenses_*.csv
+expenses_*.json
+expenses_*.xlsx
+expenses_*.pdf
+export.csv
+
+# Test repos
+remote_repo.git/
+sample_statement.csv
